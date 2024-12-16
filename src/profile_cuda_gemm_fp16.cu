@@ -15,16 +15,16 @@ int main()
     constexpr size_t num_repeats{1U};
     constexpr size_t num_warmups{2U};
 
-    cute::half_t const fp16_abs_tol{__float2half(0.1)};
-    double const fp16_rel_tol{100.0};
+    cute::half_t const fp16_abs_tol{__float2half(5.0e-2f)};
+    double const fp16_rel_tol{1.0e-1f};
 
-    // constexpr size_t m{8192U};
-    // constexpr size_t n{8192U};
-    // constexpr size_t k{8192U};
+    // constexpr size_t m{4096U};
+    // constexpr size_t n{4096U};
+    // constexpr size_t k{4096U};
 
-    constexpr size_t m{4096U};
-    constexpr size_t n{4096U};
-    constexpr size_t k{4096U};
+    constexpr size_t m{8192U};
+    constexpr size_t n{8192U};
+    constexpr size_t k{8192U};
 
     // cublas covenience for TN gemm
     // all matrices are in column major
@@ -56,13 +56,13 @@ int main()
                                 const cute::half_t*,
                                 cute::half_t*, size_t,
                                 cudaStream_t)>>> const gemm_kernel_launch_functions {
-                                    {"custom cute gemm kernel V00", launch_cute_gemm_kernel_v00<cute::half_t>},
-                                    {"custom cute gemm kernel V01", launch_cute_gemm_kernel_v01<cute::half_t>},
-                                    {"custom cute gemm kernel V02", launch_cute_gemm_kernel_v02<cute::half_t>},
-                                    {"custom cute gemm kernel V03", launch_cute_gemm_kernel_v03<cute::half_t>},
-                                    {"custom cute hopper gemm kernel V00", launch_cute_hopper_gemm_kernel_v00<cute::half_t>},
-                                    {"custom cute hopper gemm kernel V01", launch_cute_hopper_gemm_kernel_v01<cute::half_t>},
-                                    {"custom cute hopper gemm kernel V02", launch_cute_hopper_gemm_kernel_v02<cute::half_t>}
+                                    // {"custom cute gemm kernel V00", gemm_v00::launch_cute_gemm_kernel_v00<cute::half_t>},
+                                    // {"custom cute gemm kernel V01", gemm_v01::launch_cute_gemm_kernel_v01<cute::half_t>},
+                                    // {"custom cute gemm kernel V02", gemm_v02::launch_cute_gemm_kernel_v02<cute::half_t>},
+                                    // {"custom cute gemm kernel V03", gemm_v03::launch_cute_gemm_kernel_v03<cute::half_t>},
+                                    // {"custom cute hopper gemm kernel V00", gemm_hopper_v00::launch_cute_hopper_gemm_kernel_v00<cute::half_t>},
+                                    {"custom cute hopper gemm kernel V01", gemm_hopper_v01::launch_cute_hopper_gemm_kernel_v01<cute::half_t>},
+                                    // {"custom cute hopper gemm kernel V02", gemm_hopper_v02::launch_cute_hopper_gemm_kernel_v02<cute::half_t>}
                                 };
 
     for (auto gemm_kernel_launch_function : gemm_kernel_launch_functions) {

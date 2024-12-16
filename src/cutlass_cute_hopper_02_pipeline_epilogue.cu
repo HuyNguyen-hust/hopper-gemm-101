@@ -9,6 +9,8 @@
 
 using namespace cute;
 
+namespace gemm_hopper_v02
+{
 // shared storage
 template <
     typename T,
@@ -100,47 +102,6 @@ struct KernelTraits
         )
     );
 
-    // Shared memory layout
-    // Start from Layout Atom, e.g., Layout_K_SW128_Atom
-    // K: leading dimension is K, M: leading dimension is N
-    // SW128 float: Sw<3,4,3> o smem_ptr[32b](unset) o (_8,_32):(_32,_1)
-    // SW64  float: Sw<2,4,3> o smem_ptr[32b](unset) o (_8,_16):(_16,_1)
-    // SW32  float: Sw<1,4,3> o smem_ptr[32b](unset) o (_8,_8):(_8,_1)
-    // SW128 half:  Sw<3,4,3> o smem_ptr[16b](unset) o (_8,_64):(_64,_1)
-    // SW64  half:  Sw<2,4,3> o smem_ptr[16b](unset) o (_8,_32):(_32,_1)
-    // SW32  half:  Sw<1,4,3> o smem_ptr[16b](unset) o (_8,_16):(_16,_1)
-
-    // 32b here means 32 bits = 4 bytes = 1 float
-    // 16b here means 16 bits = 2 bytes = 1 half
-
-    // One thing to be careful is the Swizzle config B,M,S
-    // For example with SW64 half
-    // print would display:         Sw<2,4,3> o smem_ptr[16b](unset) o (_8,_32):(_32,_1)
-    // print_layout would display:  Sw<2,3,3> o _0 o (_8,_32):(_32,_1)
-    // The difference is the above config 2^M is the number of bytes, not the number of halfs
-    // 2^4 bytes = 2^3 halfs
-    // Similarly, see the layout for SW128 float
-    // print displays:              Sw<3,4,3> o smem_ptr[32b](unset) o (_8,_32):(_32,_1)
-    // print_layout displays:       Sw<3,2,3> o _0 o (_8,_32):(_32,_1)
-    // 2^4 bytes = 2^2 floats
-    // From this we know that these builtin swizzle configs always treat consecutive 16 bytes (8 halfs or 4 floats) as one unit (bc M = 4 always)
-    // And it also views 1 row as of having 8 units (bc S = 3)
-
-    // Now let's see how we have that swizzle layout
-    // Take SW64 half as an example
-    // Why is it SW<2,4,3> and (_8,_32):(_32,_1)?
-    // Here 64 bytes is the swizzle width:
-    // 64 bytes = 4 x 16 bytes
-    // This will do swizzle on 4 consecutive 16-byte segments, or 4 consecutive of (8 halfs), which is 32 halfs, which is exactly the width of the atom
-    // So why is the number or rows is 8?
-    // This comes from the number of physical rows of the swizzle config
-    // SW<2,4,3> means 2^2 rows, or 4 rows. Why 4?
-    // Bc the pattern repeats every 4 rows, with row n having the same pattern as row (n-4).
-    // --> the number of physical rows = 4, and the number of logical rows = 8
-
-    // Read the appendix C.4,5,6 from this paper: https://arxiv.org/pdf/2410.20399
-    // to see the 32-byte, 64-byte, and 128-byte swizzle for halfs (you can view it as float by combining 2 halfs as 1 float)
-
     using SmemLayoutAtom = GMMA::Layout_K_SW128_Atom<T>;
 
     using SmemLayoutA = decltype(
@@ -158,12 +119,13 @@ struct KernelTraits
     );
 
     // Rmem to Smem CopyAtom and Layout
-    using SmemCopyAtomC = Copy_Atom<SM90_U32x4_STSM_N, Element>;
+    // using SmemCopyAtomC = Copy_Atom<SM90_U32x4_STSM_N, Element>;
+    using SmemCopyAtomC = Copy_Atom<SM90_U16x8_STSM_T, Element>;
     // What is SM90_U32x4_STSM_N?
     // SM90: Hopper
     // U32x4: load 4 uint32's (1 thread workload)
     // STSM: store to shared memory
-    // N: no transpose
+    // N: no transpose --> That's why I use SM90_U16x8_STSM_T, because C is col-major
     // The ptx of this instruction is: stmatrix.sync.aligned.x4.m8n8.shared.b16 [%0], {%1, %2, %3, %4};
     // which means store 8x8x4 bf16 r2s. How?
     // 1 threads will store 4 x uint32's = 4 x (2 bf16's) or 8 x bf16's
@@ -172,7 +134,8 @@ struct KernelTraits
     // to build the TiledCopy, we need the ThreadLayout and ValueLayout
     // This Tiledcopy is specialized for TiledMMA, so we later build the TiledCopy using the TiledMMA information
 
-    using SmemLayoutAtomC = GMMA::Layout_K_SW128_Atom<T>;
+    // using SmemLayoutAtomC = GMMA::Layout_K_SW128_Atom<T>;
+    using SmemLayoutAtomC = GMMA::Layout_MN_SW128_Atom<T>;
     using SmemLayoutC = decltype(
         tile_to_shape(
             SmemLayoutAtomC{},
@@ -468,8 +431,8 @@ struct CollectiveEpilogue
 
     // 2. decltype of TMA desc (Smem to Gmem)
     using ShapeT = Shape<int32_t, int32_t>;
-    // using StrideT = Shape<_1, int32_t>;
-    using StrideT = Shape<int32_t, _1>;
+    using StrideT = Shape<_1, int32_t>;
+    // using StrideT = Shape<int32_t, _1>;
     using LayoutT = Layout<ShapeT, StrideT>;
 
     using TmaStoreC = decltype(
@@ -696,7 +659,7 @@ __global__ void cute_hopper_gemm_v02(
             PipelineState write_state = cutlass::make_producer_start_state<MainloopPipeline>();
             // phase bit = 1, stage = 0, count = 0
             // 1. the phase bit of write_state is to control the empty_barrier (sounds counterintuitive):
-            // pipeline.producer_acquire(write_state) or empty_barrier.wait(): when all threads have arrived, the phase bit will be flipped to 1
+            // pipeline.producer_acquire(write_state) or empty_barrier.wait(): when all threads have arrived, the phase bit will be flipped
             // 2. the stage of write_state is to control the full_barrier:
             // pipeline.producer_get_barrier(write_state): it gets the full_barrier_ptr_[stage]
 
@@ -749,9 +712,9 @@ void launch_cute_hopper_gemm_kernel_v02(
     // Block shape and cta tiler
     constexpr int kWarps_ = 12;
     constexpr int kBlockM_ = 256;
-    constexpr int kBlockN_ = 192;
-    constexpr int kBlockK_ = 128;
-    constexpr int kStages_ = 2;
+    constexpr int kBlockN_ = 128;
+    constexpr int kBlockK_ = 64;
+    constexpr int kStages_ = 4;
 
     using Kernel_traits = KernelTraits<T, kWarps_,kBlockM_, kBlockN_, kBlockK_, kStages_>;
 
@@ -759,21 +722,14 @@ void launch_cute_hopper_gemm_kernel_v02(
     using SmemLayoutB = typename Kernel_traits::SmemLayoutB;
     using SmemLayoutC = typename Kernel_traits::SmemLayoutC;
 
-    // print(SmemLayoutA{});
-    // printf("\n");
-    // print(SmemLayoutB{});
-    // printf("\n");
-    // print(SmemLayoutC{});
-    // printf("\n");
-
     using TiledMMA = typename Kernel_traits::TiledMMA;
 
     // setup TMA desc like v00 but using CollectiveMainloop
     int M = int(m); int N = int(n); int K = int(k);
     auto gmemLayoutA = make_layout(make_shape(M, K), make_stride(K, _1{}));
     auto gmemLayoutB = make_layout(make_shape(N, K), make_stride(K, _1{}));
-    // auto gmemLayoutC = make_layout(make_shape(M, N), make_stride(_1{}, M));
-    auto gmemLayoutC = make_layout(make_shape(M, N), make_stride(N, _1{}));
+    auto gmemLayoutC = make_layout(make_shape(M, N), make_stride(_1{}, M));
+    // auto gmemLayoutC = make_layout(make_shape(M, N), make_stride(N, _1{}));
 
     using Collective_mainloop = CollectiveMainloop<Kernel_traits>;
     using Collective_epilogue = CollectiveEpilogue<Kernel_traits>;
@@ -834,3 +790,5 @@ template void launch_cute_hopper_gemm_kernel_v02<cute::half_t>(size_t m, size_t 
                                     const cute::half_t *beta,
                                     cute::half_t *C, size_t ldc,
                                     cudaStream_t stream);                                    
+
+} // namespace gemm_hopper_v02

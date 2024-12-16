@@ -5,8 +5,12 @@
 #include <cute/arch/copy_sm90.hpp>
 #include <cutlass/arch/barrier.h>
 
+
+
 using namespace cute;
 
+namespace gemm_hopper_v00
+{
 template <typename T>
 struct Params 
 {
@@ -177,7 +181,8 @@ __global__ void cute_hopper_gemm_v00(
     Tensor mC = make_tensor(
         make_gmem_ptr(params.C),
         make_shape(params.M, params.N),
-        make_stride(params.N, _1{})
+        // make_stride(params.N, _1{})
+        make_stride(_1{}, params.M)
     );
 
     // tiling
@@ -430,6 +435,7 @@ void launch_cute_hopper_gemm_kernel_v00(
         cute::size(ceil_div(params.M, kBlockM_)),
         1U
     };
+
     cutlass::ClusterLaunchParams launch_params{grid, block, cluster, smem_size, stream};
 
     void const* kernel = reinterpret_cast<void const*>(&cute_hopper_gemm_v00 <
@@ -470,3 +476,5 @@ template void launch_cute_hopper_gemm_kernel_v00<cute::half_t>(size_t m, size_t 
                                     const cute::half_t *beta,
                                     cute::half_t *C, size_t ldc,
                                     cudaStream_t stream);                                    
+
+} // namespace gemm_hopper_v00

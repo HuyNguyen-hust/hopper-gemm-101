@@ -26,7 +26,7 @@ add_library(cuda_gemm
             cutlass_cute_01_block_tiling_thread_tiling_with_swizzle_shared_memory.cu
             cutlass_cute_02_block_tiling_thread_tiling_with_swizzle_shared_memory_pipeline.cu
             cutlass_cute_03_block_tiling_thread_tiling_with_swizzle_shared_memory_pipeline_epilogue.cu
-            cutlass_cute_hopper_00.cu
+            cutlass_cute_hopper_00_wgmma_tma.cu
             cutlass_cute_hopper_01_pipeline.cu
             cutlass_cute_hopper_02_pipeline_epilogue.cu
             profile_utils.cu

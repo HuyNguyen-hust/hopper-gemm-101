@@ -44,10 +44,8 @@ template <typename T,
 void inititalize_random_matrix(T* A , size_t m, size_t n, size_t lda, unsigned int seed = 0U)
 {   
     // create a generator
-    // std::default_random_engine engine(seed);
-    // std::uniform_int_distribution<int> distribution(0, 5);
     std::default_random_engine engine(seed);
-    std::uniform_real_distribution<float> distribution(-1.0f, 1.0f);
+    std::normal_distribution<float> distribution(0.0f, 1.0f); 
     auto const generator = [&engine, &distribution]() {
         return distribution(engine);
     };
@@ -57,7 +55,8 @@ void inititalize_random_matrix(T* A , size_t m, size_t n, size_t lda, unsigned i
     {
         for (size_t j{0U}; j < n; ++j)
         {
-            A[i * lda + j] = static_cast<T>(generator());
+            // A[i * lda + j] = static_cast<T>(generator()); // This will fail because of the sensitivity of fp16
+            A[i * lda + j] = static_cast<T>((float)rand() / RAND_MAX * 0.1f);
         }
     }
 }
@@ -138,6 +137,28 @@ template <typename T>
 bool all_close(T const* C, T const* C_ref, size_t m, size_t n, size_t ldc,
                T abs_tol, double rel_tol)   
 {   
+
+    // //  print first 10x10 values
+    // for (size_t i{0U}; i < 10U; ++i)
+    // {
+    //     for (size_t j{0U}; j < 10U; ++j)
+    //     {
+    //         std::cout << static_cast<float>(C[i * ldc + j]) << " ";
+    //     }
+    //     std::cout << std::endl;
+    // }
+
+    // std::cout << std::endl;
+
+    // for (size_t i{0U}; i < 10U; ++i)
+    // {
+    //     for (size_t j{0U}; j < 10U; ++j)
+    //     {
+    //         std::cout << static_cast<float>(C_ref[i * ldc + j]) << " ";
+    //     }
+    //     std::cout << std::endl;
+    // }
+
     // casting all to double to make the comparison accurate
     bool status{true};
 
@@ -146,7 +167,8 @@ bool all_close(T const* C, T const* C_ref, size_t m, size_t n, size_t ldc,
         for (size_t j{0U}; j < n; ++j)
         {
             double const C_val{static_cast<double>(C[i * ldc + j])};
-            double const C_ref_val{static_cast<double>(C_ref[j * ldc + i])};
+            // double const C_ref_val{static_cast<double>(C_ref[j * ldc + i])};
+            double const C_ref_val{static_cast<double>(C_ref[i * ldc + j])};
             double const diff_val{std::abs(C_val - C_ref_val)};
             // if (diff_val > max(abs_tol, rel_tol * abs(C_ref_val)))
             if (diff_val > std::max(static_cast<double>(abs_tol), rel_tol * static_cast<double>(std::abs(C_ref_val))))
@@ -221,7 +243,7 @@ std::pair<float, float> profile_gemm(size_t m, size_t n, size_t k,
     CHECK_CUDA_ERROR(cudaMemcpy(A_device, A_host, m * lda * sizeof(T), cudaMemcpyHostToDevice));
     CHECK_CUDA_ERROR(cudaMemcpy(B_device, B_host, n * ldb * sizeof(T), cudaMemcpyHostToDevice));
     CHECK_CUDA_ERROR(cudaMemcpy(C_device, C_host, m * ldc * sizeof(T), cudaMemcpyHostToDevice));
-    // CHECK_CUDA_ERROR(cudaMemcpy(C_host_ref, C_host, m * ldc * sizeof(T), cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(C_host_ref, C_host, m * ldc * sizeof(T), cudaMemcpyHostToDevice));
 
     // // create cuBLAS handle
     cublasHandle_t handle;

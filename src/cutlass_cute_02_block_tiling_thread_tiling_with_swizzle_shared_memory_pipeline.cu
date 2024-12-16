@@ -2,6 +2,8 @@
 
 #include "cuda_gemm.hpp"
 
+namespace gemm_v02
+{
 // kernel
 template <
     class T, 
@@ -34,7 +36,8 @@ __global__ void cute_gemm_v02(
     // C (m,n) --> cute layout: C (m, n) : (1, m) --> ldc = m
     auto dA = make_stride(lda, _1{});
     auto dB = make_stride(ldb, _1{});
-    auto dC = make_stride(ldc, _1{});
+    // auto dC = make_stride(ldc, _1{});
+    auto dC = make_stride(_1{}, ldc);
     Tensor mA = make_tensor(make_gmem_ptr(A), select<0, 2>(shape_MNK), dA); // M x K
     Tensor mB = make_tensor(make_gmem_ptr(B), select<1, 2>(shape_MNK), dB); // N x K
     Tensor mC = make_tensor(make_gmem_ptr(C), select<0, 1>(shape_MNK), dC); // M x N
@@ -204,7 +207,7 @@ void launch_cute_gemm_kernel_v02(
     // additional dim: NUM_STAGES --> This is for later pipelining the k-slice GEMM
     auto BLOCK_SIZE_M = _256{};
     auto BLOCK_SIZE_N = _128{};
-    auto BLOCK_SIZE_K = _64{};
+    auto BLOCK_SIZE_K = _32{};
     auto NUM_STAGES = _4{};
     using CtaTiler = decltype(make_shape(BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K));
 
@@ -373,3 +376,5 @@ template void launch_cute_gemm_kernel_v02<cute::half_t>(
     cute::half_t *C, size_t ldc,
     cudaStream_t stream
 );
+
+} // namespace gemm_v02

@@ -2,6 +2,8 @@
 
 #include "cuda_gemm.hpp"
 
+namespace gemm_v00
+{
 // kernel
 template <
     class ProblemShape, class CtaTiler,
@@ -48,19 +50,15 @@ __global__ void cute_gemm_v00(
     
     #pragma unroll 1
     for (int k_tile = 0; k_tile < NUM_TILES_K; ++k_tile) {
-        // copy from global memory to thread private memory
+        // copy from global memory to thread registers
         copy(tAgA(_, _, _, k_tile), tArA);
         copy(tBgB(_, _, _, k_tile), tBrB);
-
-        // no need to sync here because the compute is independent with other threads (or the copy is not asynchronous?)
 
         // compute
         gemm(tiled_mma, tCrC, tArA, tBrB, tCrC);
     }
 
-    
-    copy(tCrC, tCgC);
-    // axpby(alpha, tCrC, beta, tCgC);
+    axpby(alpha, tCrC, beta, tCgC);
 }
 
 // launch
@@ -86,11 +84,12 @@ void launch_cute_gemm_kernel_v00(
     // A, B, C stride
     auto dA = make_stride(lda, _1{});
     auto dB = make_stride(ldb, _1{});
-    auto dC = make_stride(ldc, _1{});
+    // auto dC = make_stride(ldc, _1{});
+    auto dC = make_stride(_1{}, ldc);
 
     // block shape and cta tiler
-    auto BLOCK_TILE_SIZE_M = _256{};
-    auto BLOCK_TILE_SIZE_N = _128{};
+    auto BLOCK_TILE_SIZE_M = _128{};
+    auto BLOCK_TILE_SIZE_N = _256{};
     auto BLOCK_TILE_SIZE_K = _64{};
     auto cta_tiler = make_shape(BLOCK_TILE_SIZE_M, BLOCK_TILE_SIZE_N, BLOCK_TILE_SIZE_K);
 
@@ -159,3 +158,5 @@ template void launch_cute_gemm_kernel_v00<cute::half_t>(size_t m, size_t n, size
                                     const cute::half_t *beta,
                                     cute::half_t *C, size_t ldc,
                                     cudaStream_t stream);                                    
+
+} // namespace gemm_v00

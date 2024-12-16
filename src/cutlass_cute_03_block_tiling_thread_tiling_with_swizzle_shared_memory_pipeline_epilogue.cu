@@ -2,6 +2,8 @@
 
 #include "cuda_gemm.hpp"
 
+namespace gemm_v03
+{
 // kernel
 template <
     class T, 
@@ -35,7 +37,8 @@ __global__ void cute_gemm_v03(
     // C (m,n) --> cute layout: C (m, n) : (1, m) --> ldc = m
     auto dA = make_stride(lda, _1{});
     auto dB = make_stride(ldb, _1{});
-    auto dC = make_stride(ldc, _1{});
+    // auto dC = make_stride(ldc, _1{});
+    auto dC = make_stride(_1{}, ldc);
     Tensor mA = make_tensor(make_gmem_ptr(A), select<0, 2>(shape_MNK), dA); // M x K
     Tensor mB = make_tensor(make_gmem_ptr(B), select<1, 2>(shape_MNK), dB); // N x K
     Tensor mC = make_tensor(make_gmem_ptr(C), select<0, 1>(shape_MNK), dC); // M x N
@@ -179,7 +182,7 @@ __global__ void cute_gemm_v03(
         }
     }
 
-    // epilouge
+    // epilogue
     // sC
     auto sC = make_tensor(sA(_, _, ismem_read).data(), SmemLayoutC{});
 
@@ -218,7 +221,6 @@ __global__ void cute_gemm_v03(
         {
             auto t = make_tensor_like<T>(tCrC_r2s_1d(_, i+j));
             copy(tCrC_r2s_1d(_, i+j), t);
-            // I dont understand this part
             copy(r2s_tiled_copy_c, t, tCsC_r2s(_, 0, 0, j));
         }
         __syncthreads();
@@ -231,7 +233,7 @@ __global__ void cute_gemm_v03(
         __syncthreads();
     }
 
-    axpby(alpha, tCgC, beta, tCgC);
+    // axpby(alpha, tCgC, beta, tCgC);
 }
 
 // launch
@@ -375,14 +377,15 @@ void launch_cute_gemm_kernel_v03(
     using S2RCopyAtomA = s2r_copy_atom;
     using S2RCopyAtomB = s2r_copy_atom;
 
-    // efficient epilouge: write back C: register files --> smem --> gmem
+    // efficient epilogue: write back C: register files --> smem --> gmem
     // take use of space for Asmem for C (It's not actually C, It's just a temporary intermediate buffer with slot size equal 1 problem shape, but call C for short)
     // C layout atom: one problem shape (handled by 128 threads)
     using SmemLayoutCAtom = decltype(
         composition(
             Swizzle<2, 3, 3>{},
             make_layout(
-                make_shape(Int<MmaVM>{}, Int<MmaVN>{}) // C is in col-major
+                make_shape(Int<MmaVM>{}, Int<MmaVN>{}), // C is in col-major
+                LayoutLeft{}
             )     
         )
     );
@@ -461,3 +464,5 @@ template void launch_cute_gemm_kernel_v03<cute::half_t>(
     cute::half_t *C, size_t ldc,
     cudaStream_t stream
 );
+
+} // namespace gemm_v03
