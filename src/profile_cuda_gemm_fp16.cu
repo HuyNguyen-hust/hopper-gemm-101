@@ -61,8 +61,9 @@ int main()
                                     // {"custom cute gemm kernel V02", gemm_v02::launch_cute_gemm_kernel_v02<cute::half_t>},
                                     // {"custom cute gemm kernel V03", gemm_v03::launch_cute_gemm_kernel_v03<cute::half_t>},
                                     // {"custom cute hopper gemm kernel V00", gemm_hopper_v00::launch_cute_hopper_gemm_kernel_v00<cute::half_t>},
-                                    {"custom cute hopper gemm kernel V01", gemm_hopper_v01::launch_cute_hopper_gemm_kernel_v01<cute::half_t>},
-                                    // {"custom cute hopper gemm kernel V02", gemm_hopper_v02::launch_cute_hopper_gemm_kernel_v02<cute::half_t>}
+                                    // {"custom cute hopper gemm kernel V01", gemm_hopper_v01::launch_cute_hopper_gemm_kernel_v01<cute::half_t>},
+                                    // {"custom cute hopper gemm kernel V02", gemm_hopper_v02::launch_cute_hopper_gemm_kernel_v02<cute::half_t>},
+                                    {custom cute hopper gemm kernel V03}, gemm_hopper_v03::launch_cute_hopper_gemm_kernel_v03<cute::half_t>}
                                 };
 
     for (auto gemm_kernel_launch_function : gemm_kernel_launch_functions) {
