@@ -267,7 +267,7 @@ struct CollectiveMainloop
         int NUM_TILES_K
     )
     {
-        auto [m_block, n_block, _] = block_coord;
+        auto [m_block, n_block, bidb] = block_coord;
 
         // gmem tensors
         Tensor mA = mainloop_params.tma_load_A.get_tma_tensor(mainloop_params.gmemLayoutA.shape());
@@ -315,6 +315,22 @@ struct CollectiveMainloop
 
         int lane_predicate = cute::elect_one_sync();
 
+        // if (lane_predicate && blockIdx.x == 0)
+        // {
+        //     printf("%d %d\n", m_block, n_block);
+        //     print(mA);
+        //     printf("\n");
+        //     print(gA);
+        //     printf("\n");
+        //     print(sA);
+        //     printf("\n");
+        //     print(tAgA);
+        //     printf("\n");
+        //     print(tAsA);
+        //     printf("\n");
+        // }
+        // return;
+
         // copy
         if (lane_predicate)
         {
@@ -353,7 +369,7 @@ struct CollectiveMainloop
         int NUM_TILES_K
     )
     {
-        auto [m_block, n_block, _] = block_coord;
+        auto [m_block, n_block, bidb] = block_coord;
 
         // tiling
         auto cta_tiler = make_shape(Int<kBlockM>{}, Int<kBlockN>{}, Int<kBlockK>{});
@@ -497,7 +513,7 @@ struct CollectiveEpilogue
     {   
         tma_store_wait<0>();
 
-        auto [m_block, n_block, _] = block_coord;
+        auto [m_block, n_block, bidb] = block_coord;
 
         // Smem Tensors
         Tensor sC = make_tensor(
@@ -657,7 +673,7 @@ public:
     {
         return {current_work.tile_idx + int(gridDim.x)};
     }
-}
+};
 
 // kernel
 template <
@@ -764,7 +780,7 @@ __global__ void cute_hopper_gemm_v03(
                 work_tile_info = scheduler.template get_next_work</*isProducer=*/true>(scheduler_params, work_tile_info)
             )
             {
-                auto block_coord = work_tile_info.get_block_coord();
+                auto block_coord = work_tile_info.get_block_coord(scheduler_params);
 
                 CollectiveMainloop::load(
                     mainloop_params,
@@ -793,7 +809,7 @@ __global__ void cute_hopper_gemm_v03(
             work_tile_info = scheduler.template get_next_work</*isProducer=*/false>(scheduler_params, work_tile_info)
         )
         {
-            auto block_coord = work_tile_info.get_block_coord();
+            auto block_coord = work_tile_info.get_block_coord(scheduler_params);
 
             CollectiveMainloop::mma(
                 mainloop_params,
@@ -885,7 +901,7 @@ void launch_cute_hopper_gemm_kernel_v03(
     cudaGetDevice(&device);
     int sm_count;
     cudaDeviceGetAttribute(&sm_count, cudaDevAttrMultiProcessorCount, device);
-    dim3 grid = Scheduler::get_grid_dim(scheduler_params, sm_count);
+    dim3 grid = Scheduler::get_grid_dim(scheduler_args, sm_count);
     cutlass::ClusterLaunchParams launch_params{grid, block, cluster, smem_size, stream};
 
     void const* kernel = reinterpret_cast<void const*>(&cute_hopper_gemm_v03 <Kernel_traits, Scheduler>);
