@@ -315,22 +315,6 @@ struct CollectiveMainloop
 
         int lane_predicate = cute::elect_one_sync();
 
-        // if (lane_predicate && blockIdx.x == 0)
-        // {
-        //     printf("%d %d\n", m_block, n_block);
-        //     print(mA);
-        //     printf("\n");
-        //     print(gA);
-        //     printf("\n");
-        //     print(sA);
-        //     printf("\n");
-        //     print(tAgA);
-        //     printf("\n");
-        //     print(tAsA);
-        //     printf("\n");
-        // }
-        // return;
-
         // copy
         if (lane_predicate)
         {
@@ -799,7 +783,6 @@ __global__ void cute_hopper_gemm_v03(
         PipelineState read_state;
 
         Tensor tCrC = partition_fragment_C(typename Kernel_traits::TiledMMA{}, Shape<Int<Kernel_traits::kBlockM>, Int<Kernel_traits::kBlockN>>{});
-        clear(tCrC);
 
         TileScheduler scheduler(&shared_storage.tile_count_semaphore);
 
@@ -809,6 +792,7 @@ __global__ void cute_hopper_gemm_v03(
             work_tile_info = scheduler.template get_next_work</*isProducer=*/false>(scheduler_params, work_tile_info)
         )
         {
+            clear(tCrC);
             auto block_coord = work_tile_info.get_block_coord(scheduler_params);
 
             CollectiveMainloop::mma(
@@ -847,7 +831,7 @@ void launch_cute_hopper_gemm_kernel_v03(
 {   
     // Block shape and cta tiler
     constexpr int kWarps_ = 12;
-    constexpr int kBlockM_ = 128;
+    constexpr int kBlockM_ = 256;
     constexpr int kBlockN_ = 128;
     constexpr int kBlockK_ = 64;
     constexpr int kStages_ = 2;
@@ -901,7 +885,8 @@ void launch_cute_hopper_gemm_kernel_v03(
     cudaGetDevice(&device);
     int sm_count;
     cudaDeviceGetAttribute(&sm_count, cudaDevAttrMultiProcessorCount, device);
-    dim3 grid = Scheduler::get_grid_dim(scheduler_args, sm_count);
+    // dim3 grid = Scheduler::get_grid_dim(scheduler_args, sm_count);
+    dim3 grid = Scheduler::get_grid_dim(scheduler_args, 128);
     cutlass::ClusterLaunchParams launch_params{grid, block, cluster, smem_size, stream};
 
     void const* kernel = reinterpret_cast<void const*>(&cute_hopper_gemm_v03 <Kernel_traits, Scheduler>);

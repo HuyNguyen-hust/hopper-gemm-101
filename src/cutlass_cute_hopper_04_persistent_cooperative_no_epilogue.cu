@@ -18,26 +18,16 @@ template <
     typename T,
     int PIPE,
     typename SmemLayoutA,
-    typename SmemLayoutB,
-    typename SmemLayoutC
+    typename SmemLayoutB
 >
 struct SharedStorage
 {
     // data storage
     array_aligned<T, cosize_v<SmemLayoutA>, 128> smem_A;
-
-    union
-    {
-        array_aligned<T, cosize_v<SmemLayoutB>, 128> smem_B;
-        array_aligned<T, cosize_v<SmemLayoutC>, 128> smem_C;
-    }
+    array_aligned<T, cosize_v<SmemLayoutB>, 128> smem_B;
 
     // pipeline
-    typename cutlass::PipelineTmaAsync<PIPE>::SharedStorage pipeline_A;
-    typename cutlass::PipelineTmaAsync<PIPE>::SharedStorage pipeline_B;
-    // barrier
-    typename cutlass::CutlassBarrier barrier_C;
-
+    typename cutlass::PipelineTmaAsync<PIPE>::SharedStorage pipeline;
     int tile_count_semaphore;
 };
 
@@ -127,21 +117,8 @@ struct KernelTraits
         )
     );
 
-    // Rmem to Smem CopyAtom and Layout
-    // using SmemCopyAtomC = Copy_Atom<SM90_U32x4_STSM_N, Element>;
-    using SmemCopyAtomC = Copy_Atom<SM90_U16x8_STSM_T, Element>;
-
-    // using SmemLayoutAtomC = GMMA::Layout_K_SW128_Atom<T>;
-    using SmemLayoutAtomC = GMMA::Layout_MN_SW128_Atom<T>;
-    using SmemLayoutC = decltype(
-        tile_to_shape(
-            SmemLayoutAtomC{},
-            make_shape(Int<kBlockM>{}, Int<kBlockN>{})
-        )
-    );
-
     // SharedStorage
-    using SharedStorage = SharedStorage<T, kStages, SmemLayoutA, SmemLayoutB, SmemLayoutC>;
+    using SharedStorage = SharedStorage<T, kStages, SmemLayoutA, SmemLayoutB>;
 
     // smem_size
     static constexpr int smem_size = sizeof(SharedStorage);
@@ -169,13 +146,16 @@ struct CollectiveMainloop
     // 2. decltype of TMA desc
     using ShapeT = Shape<int32_t, int32_t>;
     using StrideT = Shape<int32_t, _1>;
+    using StrideCT = Shape<_1, int32_t>;
+    // using StrideCT = Shape<int32_t, _1>;
     using LayoutT = Layout<ShapeT, StrideT>;
+    using LayoutCT = Layout<ShapeT, StrideCT>;
 
     using TmaLoadA = decltype(
         make_tma_copy(
             SM90_TMA_LOAD{},
             make_tensor(
-                make_gmem_ptr(static_cast<Element *>(nullptr)),
+                make_gmem_ptr(static_cast<Element const*>(nullptr)),
                 ShapeT{},
                 StrideT{}
             ),
@@ -186,7 +166,7 @@ struct CollectiveMainloop
         make_tma_copy(
             SM90_TMA_LOAD{},
             make_tensor(
-                make_gmem_ptr(static_cast<Element *>(nullptr)),
+                make_gmem_ptr(static_cast<Element const*>(nullptr)),
                 ShapeT{},
                 StrideT{}
             ),
@@ -205,8 +185,10 @@ struct CollectiveMainloop
     {
         Element const* A;
         Element const* B;
+        Element *C;
         LayoutT gmemLayoutA;
         LayoutT gmemLayoutB;
+        LayoutCT gmemLayoutC;
     };
 
     // Device-side kernel params
@@ -214,8 +196,10 @@ struct CollectiveMainloop
     {
         LayoutT gmemLayoutA;
         LayoutT gmemLayoutB;
+        LayoutCT gmemLayoutC;
         TmaLoadA tma_load_A;
         TmaLoadB tma_load_B;
+        Element *C;
     };
 
     static Params
@@ -246,8 +230,10 @@ struct CollectiveMainloop
         {
             args.gmemLayoutA,
             args.gmemLayoutB,
+            args.gmemLayoutC,
             tma_load_A,
-            tma_load_B
+            tma_load_B,
+            args.C
         };
     }
 
@@ -275,7 +261,8 @@ struct CollectiveMainloop
         int NUM_TILES_K
     )
     {
-        auto [m_block, n_block, _] = block_coord;
+
+        auto [m_block, n_block, bidb] = block_coord;
 
         // gmem tensors
         Tensor mA = mainloop_params.tma_load_A.get_tma_tensor(mainloop_params.gmemLayoutA.shape());
@@ -345,27 +332,35 @@ struct CollectiveMainloop
     }
 
     // 7. consumers
-    template <
-        typename SharedStorage,
-        typename FragmentTensorC
-    >
+    template <typename SharedStorage>
     CUTLASS_DEVICE
     static void mma
     (
         Params const& mainloop_params,
         MainloopPipeline pipeline,
         PipelineState& read_state,
-        FragmentTensorC& tCrC,
         SharedStorage& shared_storage,
         cute::tuple<int32_t, int32_t, int32_t> block_coord,
         int NUM_TILES_K
     )
     {
-        auto [m_block, n_block, _] = block_coord;
-
+        auto [m_block, n_block, bidb] = block_coord;
+        
+        // gmem tensors
+        Tensor mC = make_tensor(
+            make_gmem_ptr(mainloop_params.C),
+            mainloop_params.gmemLayoutC  
+        );
+        
         // tiling
         auto cta_tiler = make_shape(Int<kBlockM>{}, Int<kBlockN>{}, Int<kBlockK>{});
         auto cta_coord = make_coord(m_block, n_block, _);
+        Tensor gC = local_tile(
+            mC,
+            cta_tiler,
+            cta_coord,
+            Step<_1, _1, X>{}
+        );
 
         // smem tensors
         Tensor sA = make_tensor(
@@ -383,6 +378,9 @@ struct CollectiveMainloop
 
         Tensor tCsA = thr_mma.partition_A(sA);  // (MMA,MMA_M,MMA_K, PIPE)
         Tensor tCsB = thr_mma.partition_B(sB);  // (MMA,MMA_N,MMA_K, PIPE)
+        Tensor tCgC = thr_mma.partition_C(gC);  // (MMA,MMA_M,MMA_N)
+        Tensor tCrC = thr_mma.make_fragment_C(tCgC);  // (MMA,MMA_M,MMA_N)
+        clear(tCrC);
 
         // allocate "fragments"
         // note that in Ampere, the fragments are physically stored in registers
@@ -411,170 +409,100 @@ struct CollectiveMainloop
 
         // Make sure all warpgroups have finished mma
         cutlass::arch::NamedBarrier::sync(Kernel_traits::kConsumerWGs * 32 * 4, 0);
+        axpby(static_cast<Element>(1.0f), tCrC, static_cast<Element>(0.0f), tCgC);
     }
 };
 
-// collective epilogue
-template <
-    typename Kernel_traits
->
-struct CollectiveEpilogue
-{
-    // 1. extract Kernel_traits
-    using Element = typename Kernel_traits::Element;
+// class StaticPersistentTileScheduler
+// {
 
-    static constexpr int kBlockM = Kernel_traits::kBlockM;
-    static constexpr int kBlockN = Kernel_traits::kBlockN;
-    static constexpr int kBlockK = Kernel_traits::kBlockK;
+// public:
 
-    using SmemLayoutC = typename Kernel_traits::SmemLayoutC;
-    using SmemCopyAtomC = typename Kernel_traits::SmemCopyAtomC; // (Rmem to Smem)
+//     // Host-side kernel arguments
+//     struct Arguments
+//     {
+//         int const num_blocks_m, num_blocks_n;
+//         int* const tile_count_semaphore = nullptr;
+//     };
 
-    using TiledMMA = typename Kernel_traits::TiledMMA;
+//     // Device-side kernel params
+//     struct Params
+//     {
+//         int total_blocks;
+//         cutlass::FastDivmod m_block_divmod, n_block_divmod;
+//     };
 
-    // 2. decltype of TMA desc (Smem to Gmem)
-    using ShapeT = Shape<int32_t, int32_t>;
-    using StrideT = Shape<_1, int32_t>;
-    // using StrideT = Shape<int32_t, _1>;
-    using LayoutT = Layout<ShapeT, StrideT>;
+//     static Params
+//     to_underlying_arguments(const Arguments& args)
+//     {
+//         return
+//         {
+//             args.num_blocks_m * args.num_blocks_n,
+//             cutlass::FastDivmod(args.num_blocks_m),
+//             cutlass::FastDivmod(args.num_blocks_n)
+//         };
+//     }
 
-    using TmaStoreC = decltype(
-        make_tma_copy(
-            SM90_TMA_STORE{},
-            make_tensor(
-                make_gmem_ptr(static_cast<Element *>(nullptr)),
-                ShapeT{},
-                StrideT{}
-            ),
-            SmemLayoutC{}
-        )
-    );
+//     static dim3
+//     get_grid_dim(const Arguments& args, int num_sm)
+//     {
+//         return {uint32_t(num_sm), 1, 1};
+//     }
 
-    // 3. setup the TMA desc (which replace the need of Params in hopper_00)
-    // Host-side kernel arguments
-    struct Arguments
-    {
-        Element* C;
-        LayoutT gmemLayoutC;
-    };
+//     struct WorkTileInfo
+//     {
+//         int tile_idx;
 
-    // Device-side kernel params
-    struct Params
-    {
-        Element *C;
-        LayoutT gmemLayoutC;
-        TmaStoreC tma_store_C;
-    };
+//         CUTLASS_DEVICE
+//         bool is_valid(Params const& params) const {
+//             return tile_idx < params.total_blocks;
+//         }
 
-    static Params
-    to_underlying_arguments(const Arguments& args)
-    {
-        return {
-            args.C,
-            args.gmemLayoutC,
-            make_tma_copy(
-                SM90_TMA_STORE{},
-                make_tensor(
-                    make_gmem_ptr(args.C),
-                    args.gmemLayoutC
-                ),
-                SmemLayoutC{}
-            )
-        };
-    }
+//         CUTLASS_DEVICE
+//         cute::tuple<int32_t, int32_t, int32_t>
+//         get_block_coord(Params const& params) const {
+//             int m_block, n_block, bidb;
+//             bidb = params.n_block_divmod.divmod(n_block, params.m_block_divmod.divmod(m_block, tile_idx));
+//             return {m_block, n_block, bidb};
+//         }
+//     };
 
-    // 4. Prefetch TMA desc
-    CUTLASS_DEVICE
-    static void prefetch_tma_descriptors(Params const& mainloop_params)
-    {
-        cute::prefetch_tma_descriptor(mainloop_params.tma_store_C.get_tma_descriptor());
-    }
-    
-    // 5. Producer store
-    template <
-        typename SharedStorage,
-        typename FragmentTensorC
-    >
-    CUTLASS_DEVICE
-    static void store(
-        Params const& epilogue_params,
-        FragmentTensorC const& tCrC,
-        SharedStorage& shared_storage,
-        cute::tuple<int32_t, int32_t, int32_t> block_coord
-    )
-    {   
-        tma_store_wait<0>();
+//     CUTLASS_DEVICE // inline
+//     StaticPersistentTileScheduler(int* tile_count_smem_) {};
 
-        auto [m_block, n_block, _] = block_coord;
+//     CUTLASS_DEVICE
+//     WorkTileInfo
+//     get_initial_work() const
+//     {
+//         return {int(blockIdx.x)};
+//     }
 
-        // Smem Tensors
-        Tensor sC = make_tensor(
-            make_smem_ptr(shared_storage.smem_C.data()),
-            SmemLayoutC{}
-        );
+//     CUTLASS_DEVICE
+//     void init_consumer() const
+//     {
 
-        // Rmem -> Smem Partition
-        TiledMMA tiled_mma;
-        auto r2s_tiled_copy = make_tiled_copy_C(SmemCopyAtomC{}, tiled_mma);
-        // Normal TiledCopy need CopyAtom and ThreadLayout and ValueLayout
-        // Here the TiledMMA will provide that information
-        auto r2s_thr_copy = r2s_tiled_copy.get_thread_slice(threadIdx.x - cutlass::NumThreadsPerWarpGroup);
-        
-        // R2S partition
-        // tCrC (MMA, MMA_M, MMA_N) --> tAccCrC ((Atom, AtomNum), MMA_M, MMA_N)
-        Tensor tAccCrC = r2s_thr_copy.retile_S(tCrC); // copy view of tCrC
-        Tensor tAccCsC = r2s_thr_copy.partition_D(sC); // ((Atom, AtomNum), PIPE_M, PIPE_N)
+//     }
 
-        copy(r2s_tiled_copy, tAccCrC, tAccCsC);
-        cutlass::arch::fence_view_async_shared(); // ensure smem writes are visible to TMA
-        cutlass::arch::NamedBarrier::arrive(Kernel_traits::kConsumerWGs * 32 * 4 + cutlass::NumThreadsPerWarp,
-                                            cutlass::arch::ReservedNamedBarriers::EpilogueBarrier);
-        // First we have all Consumer threads arrive at the barrier
-        // However we wait for additional 32 threads to arrive? Where and why are these 32 threads?
-        // These 32 threads is the last warp used for the TMA store (So this warp actually arrives at the barrier twice)
+//     CUTLASS_DEVICE
+//     void prefetch_next_work(const Params& params, WorkTileInfo& current_work) const
+//     {
 
-        // Prefetch TMA Store
-        // Gmem Tensors
-        Tensor mC = epilogue_params.tma_store_C.get_tma_tensor(epilogue_params.gmemLayoutC.shape());
-        
-        // Tiling
-        auto cta_tiler = make_shape(Int<kBlockM>{}, Int<kBlockN>{}, Int<kBlockK>{});
-        auto cta_coord = make_coord(m_block, n_block, _);
-        Tensor gC = local_tile(
-            mC,
-            cta_tiler,
-            cta_coord,
-            Step<_1, _1, X>{}
-        );
-        auto s2g_thr_copy = epilogue_params.tma_store_C.get_thread_slice(threadIdx.x - cutlass::NumThreadsPerWarpGroup);
-        Tensor tCsC = s2g_thr_copy.partition_S(sC); // (TMA, TMA_M, TMA_N)
-        Tensor tCgC = s2g_thr_copy.partition_D(gC); // (TMA, TMA_M, TMA_N)
+//     }
 
-         // TMA STORE: SMEM -> GMEM
-        int write_warp_idx = Kernel_traits::kWarps - 1;
-        int const warp_idx = cutlass::canonical_warp_idx_sync();
-        int const lane_predicate = cute::elect_one_sync();
-        if (warp_idx == write_warp_idx) {
-            // Ensure RMEM -> SMEM copy completes before issuing TMA store
-            cutlass::arch::NamedBarrier::sync(
-                Kernel_traits::kConsumerWGs * 32 * 4 + cutlass::NumThreadsPerWarp, 
-                cutlass::arch::ReservedNamedBarriers::EpilogueBarrier
-            );
-        }
-        if (warp_idx == write_warp_idx && lane_predicate) {
-            copy(epilogue_params.tma_store_C, tCsC, tCgC);
-            tma_store_arrive();
-        }
-        // TODO: overlap epilogue with next CTA load in persistent kernel
-        // tma_store_wait<0>();
-    }
+//     CUTLASS_DEVICE
+//     void broadcast_next_work(WorkTileInfo& current_work) const
+//     {
 
-    CUTLASS_DEVICE 
-    static void store_tail() {
-        tma_store_wait<0>();
-    }
+//     }
 
-};
+//     template<bool isProducer=false>
+//     CUTLASS_DEVICE
+//     WorkTileInfo
+//     get_next_work(const Params& params, WorkTileInfo& current_work) const
+//     {
+//         return {current_work.tile_idx + int(gridDim.x)};
+//     }
+// };
 
 class StaticPersistentTileScheduler
 {
@@ -598,6 +526,9 @@ public:
     static Params
     to_underlying_arguments(const Arguments& args)
     {
+
+        static_assert(args.num_block_m%16 == 0);
+        static_assert(args.num_block_n%8 == 0);
         return
         {
             args.num_blocks_m * args.num_blocks_n,
@@ -665,7 +596,7 @@ public:
     {
         return {current_work.tile_idx + int(gridDim.x)};
     }
-}
+};
 
 // kernel
 template <
@@ -674,12 +605,10 @@ template <
 >
 __global__ void cute_hopper_gemm_v04(
     CUTE_GRID_CONSTANT typename CollectiveMainloop<Kernel_traits>::Params const mainloop_params,
-    CUTE_GRID_CONSTANT typename CollectiveEpilogue<Kernel_traits>::Params const epilogue_params,
     CUTE_GRID_CONSTANT typename TileScheduler::Params const scheduler_params
 )
 {   
     using CollectiveMainloop = CollectiveMainloop<Kernel_traits>;
-    using CollectiveEpilogue = CollectiveEpilogue<Kernel_traits>;
 
     using MainloopPipeline = typename Kernel_traits::MainloopPipeline;
     using PipelineParams = typename MainloopPipeline::Params;
@@ -704,14 +633,8 @@ __global__ void cute_hopper_gemm_v04(
     if (warp_idx == 0 && lane_predicate)
     {
         CollectiveMainloop::prefetch_tma_descriptors(mainloop_params);
-        CollectiveEpilogue::prefetch_tma_descriptors(epilogue_params);
     }
 
-    // barrier initialization
-    if (warp_idx == 0 && lane_predicate)
-    {
-        shared_storage.barrier_C.init(/*numThreads=*/1);
-    }
     // pipeline initialization
     PipelineParams pipeline_params;
 
@@ -777,7 +700,7 @@ __global__ void cute_hopper_gemm_v04(
                 work_tile_info = scheduler.template get_next_work</*isProducer=*/true>(scheduler_params, work_tile_info)
             )
             {
-                auto block_coord = work_tile_info.get_block_coord();
+                auto block_coord = work_tile_info.get_block_coord(scheduler_params);
 
                 CollectiveMainloop::load(
                     mainloop_params,
@@ -795,9 +718,6 @@ __global__ void cute_hopper_gemm_v04(
         cutlass::arch::warpgroup_reg_alloc<240>();
         PipelineState read_state;
 
-        Tensor tCrC = partition_fragment_C(typename Kernel_traits::TiledMMA{}, Shape<Int<Kernel_traits::kBlockM>, Int<Kernel_traits::kBlockN>>{});
-        clear(tCrC);
-
         TileScheduler scheduler(&shared_storage.tile_count_semaphore);
 
         for (
@@ -806,27 +726,18 @@ __global__ void cute_hopper_gemm_v04(
             work_tile_info = scheduler.template get_next_work</*isProducer=*/false>(scheduler_params, work_tile_info)
         )
         {
-            auto block_coord = work_tile_info.get_block_coord();
+            auto block_coord = work_tile_info.get_block_coord(scheduler_params);
 
             CollectiveMainloop::mma(
                 mainloop_params,
                 pipeline,
                 read_state,
-                tCrC,
                 shared_storage,
                 block_coord,
                 NUM_TILES_K
-                );
-            
-            CollectiveEpilogue::store(
-                epilogue_params,
-                tCrC,
-                shared_storage,
-                block_coord
             );
+            
         }
-
-        CollectiveEpilogue::store_tail();
     }
 }
 
@@ -844,16 +755,15 @@ void launch_cute_hopper_gemm_kernel_v04(
 {   
     // Block shape and cta tiler
     constexpr int kWarps_ = 12;
-    constexpr int kBlockM_ = 128;
+    constexpr int kBlockM_ = 256;
     constexpr int kBlockN_ = 128;
     constexpr int kBlockK_ = 64;
-    constexpr int kStages_ = 2;
+    constexpr int kStages_ = 4;
 
     using Kernel_traits = KernelTraits<T, kWarps_,kBlockM_, kBlockN_, kBlockK_, kStages_>;
 
     using SmemLayoutA = typename Kernel_traits::SmemLayoutA;
     using SmemLayoutB = typename Kernel_traits::SmemLayoutB;
-    using SmemLayoutC = typename Kernel_traits::SmemLayoutC;
 
     using TiledMMA = typename Kernel_traits::TiledMMA;
 
@@ -865,22 +775,14 @@ void launch_cute_hopper_gemm_kernel_v04(
     // auto gmemLayoutC = make_layout(make_shape(M, N), make_stride(N, _1{}));
 
     using Collective_mainloop = CollectiveMainloop<Kernel_traits>;
-    using Collective_epilogue = CollectiveEpilogue<Kernel_traits>;
 
     using Scheduler = StaticPersistentTileScheduler;
 
     typename Collective_mainloop::Params mainloop_params = Collective_mainloop::to_underlying_arguments(
         {
-            A, B,
-            gmemLayoutA, gmemLayoutB
+            A, B, C,
+            gmemLayoutA, gmemLayoutB, gmemLayoutC
         }
-    );
-
-    typename Collective_epilogue::Params epilogue_params = Collective_epilogue::to_underlying_arguments(
-        {
-            C,
-            gmemLayoutC
-        }  
     );
 
     int num_block_m = ceil_div(m, kBlockM_);
@@ -898,7 +800,8 @@ void launch_cute_hopper_gemm_kernel_v04(
     cudaGetDevice(&device);
     int sm_count;
     cudaDeviceGetAttribute(&sm_count, cudaDevAttrMultiProcessorCount, device);
-    dim3 grid = Scheduler::get_grid_dim(scheduler_params, sm_count);
+    // dim3 grid = Scheduler::get_grid_dim(scheduler_args, sm_count);
+    dim3 grid = Scheduler::get_grid_dim(scheduler_args, 128);
     cutlass::ClusterLaunchParams launch_params{grid, block, cluster, smem_size, stream};
 
     void const* kernel = reinterpret_cast<void const*>(&cute_hopper_gemm_v04 <Kernel_traits, Scheduler>);
@@ -913,7 +816,6 @@ void launch_cute_hopper_gemm_kernel_v04(
         launch_params,
         kernel,
         mainloop_params,
-        epilogue_params,
         scheduler_params
     );
     CUTE_CHECK_LAST();
