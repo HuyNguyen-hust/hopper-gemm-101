@@ -18,9 +18,9 @@ int main()
     cute::half_t const fp16_abs_tol{__float2half(5.0e-2f)};
     double const fp16_rel_tol{1.0e-1f};
 
-    // constexpr size_t m{4096U};
-    // constexpr size_t n{4096U};
-    // constexpr size_t k{4096U};
+    // constexpr size_t m{16384U};
+    // constexpr size_t n{16384U};
+    // constexpr size_t k{16384U};
 
     constexpr size_t m{8192U};
     constexpr size_t n{8192U};
@@ -64,7 +64,7 @@ int main()
                                     // {"custom cute hopper gemm kernel V01", gemm_hopper_v01::launch_cute_hopper_gemm_kernel_v01<cute::half_t>},
                                     {"custom cute hopper gemm kernel V02", gemm_hopper_v02::launch_cute_hopper_gemm_kernel_v02<cute::half_t>},
                                     {"custom cute hopper gemm kernel V03", gemm_hopper_v03::launch_cute_hopper_gemm_kernel_v03<cute::half_t>},
-                                    {"custom cute hopper gemm kernel V04", gemm_hopper_v04::launch_cute_hopper_gemm_kernel_v04<cute::half_t>}
+                                    {"custom cute hopper gemm kernel V03 no epilogue", gemm_hopper_v03_no_epilogue::launch_cute_hopper_gemm_kernel_v03_no_epilogue<cute::half_t>}
                                 };
 
     for (auto gemm_kernel_launch_function : gemm_kernel_launch_functions) {

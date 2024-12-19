@@ -11,7 +11,7 @@
 
 using namespace cute;
 
-namespace gemm_hopper_v04
+namespace gemm_hopper_v03_no_epilogue
 {
 // shared storage
 template <
@@ -509,6 +509,10 @@ class StaticPersistentTileScheduler
 
 public:
 
+    static constexpr int tile_group_m = 16;
+    static constexpr int tile_group_n = 8;
+    static constexpr int tile_group_size = tile_group_m * tile_group_n;
+
     // Host-side kernel arguments
     struct Arguments
     {
@@ -520,20 +524,18 @@ public:
     struct Params
     {
         int total_blocks;
-        cutlass::FastDivmod m_block_divmod, n_block_divmod;
+        int num_blocks_m;
+        int num_blocks_n;
     };
 
     static Params
     to_underlying_arguments(const Arguments& args)
     {
-
-        static_assert(args.num_block_m%16 == 0);
-        static_assert(args.num_block_n%8 == 0);
         return
         {
             args.num_blocks_m * args.num_blocks_n,
-            cutlass::FastDivmod(args.num_blocks_m),
-            cutlass::FastDivmod(args.num_blocks_n)
+            args.num_blocks_m,
+            args.num_blocks_n
         };
     }
 
@@ -556,7 +558,16 @@ public:
         cute::tuple<int32_t, int32_t, int32_t>
         get_block_coord(Params const& params) const {
             int m_block, n_block, bidb;
-            bidb = params.n_block_divmod.divmod(n_block, params.m_block_divmod.divmod(m_block, tile_idx));
+            int tile_group_idx = tile_idx / tile_group_size;
+            int tile_in_group = tile_idx % tile_group_size;
+            int tile_m = tile_in_group % tile_group_m;
+            int tile_n = tile_in_group / tile_group_m;
+            int group_m, group_n;
+            group_m = tile_group_idx % (params.num_blocks_m / tile_group_m);
+            group_n = tile_group_idx / (params.num_blocks_m / tile_group_m);
+            m_block = group_m * tile_group_m + tile_m;
+            n_block = group_n * tile_group_n + tile_n;
+            bidb = 0;
             return {m_block, n_block, bidb};
         }
     };
@@ -603,7 +614,7 @@ template <
     typename Kernel_traits,
     typename TileScheduler
 >
-__global__ void cute_hopper_gemm_v04(
+__global__ void cute_hopper_gemm_v03_no_epilogue(
     CUTE_GRID_CONSTANT typename CollectiveMainloop<Kernel_traits>::Params const mainloop_params,
     CUTE_GRID_CONSTANT typename TileScheduler::Params const scheduler_params
 )
@@ -743,7 +754,7 @@ __global__ void cute_hopper_gemm_v04(
 
 // launch
 template<typename T>
-void launch_cute_hopper_gemm_kernel_v04(
+void launch_cute_hopper_gemm_kernel_v03_no_epilogue(
     size_t m, size_t n, size_t k,
     const T *alpha,
     const T *A, size_t lda,
@@ -755,8 +766,8 @@ void launch_cute_hopper_gemm_kernel_v04(
 {   
     // Block shape and cta tiler
     constexpr int kWarps_ = 12;
-    constexpr int kBlockM_ = 256;
-    constexpr int kBlockN_ = 128;
+    constexpr int kBlockM_ = 128;
+    constexpr int kBlockN_ = 256;
     constexpr int kBlockK_ = 64;
     constexpr int kStages_ = 4;
 
@@ -804,7 +815,7 @@ void launch_cute_hopper_gemm_kernel_v04(
     dim3 grid = Scheduler::get_grid_dim(scheduler_args, 128);
     cutlass::ClusterLaunchParams launch_params{grid, block, cluster, smem_size, stream};
 
-    void const* kernel = reinterpret_cast<void const*>(&cute_hopper_gemm_v04 <Kernel_traits, Scheduler>);
+    void const* kernel = reinterpret_cast<void const*>(&cute_hopper_gemm_v03_no_epilogue <Kernel_traits, Scheduler>);
 
     if (smem_size >= 48 * 1024) // 48KB
     {
@@ -828,7 +839,7 @@ void launch_cute_hopper_gemm_kernel_v04(
 }
 
 // explicit instantiation                      
-template void launch_cute_hopper_gemm_kernel_v04<cute::half_t>(size_t m, size_t n, size_t k,
+template void launch_cute_hopper_gemm_kernel_v03_no_epilogue<cute::half_t>(size_t m, size_t n, size_t k,
                                     const cute::half_t *alpha,
                                     const cute::half_t *A, size_t lda,
                                     const cute::half_t *B, size_t ldb,
@@ -836,4 +847,4 @@ template void launch_cute_hopper_gemm_kernel_v04<cute::half_t>(size_t m, size_t 
                                     cute::half_t *C, size_t ldc,
                                     cudaStream_t stream);                                    
 
-} // namespace gemm_hopper_v04
+} // namespace gemm_hopper_v03_no_epilogue

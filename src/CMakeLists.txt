@@ -30,7 +30,7 @@ add_library(cuda_gemm
             cutlass_cute_hopper_01_pipeline.cu
             cutlass_cute_hopper_02_pipeline_epilogue.cu
             cutlass_cute_hopper_03_persistent_cooperative.cu
-            cutlass_cute_hopper_04_persistent_cooperative_no_epilogue.cu
+            cutlass_cute_hopper_03_persistent_cooperative_no_epilogue.cu
             profile_utils.cu
             cuda_utils.cu)
 # include directories for cuda_gemm

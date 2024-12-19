@@ -568,10 +568,105 @@ struct CollectiveEpilogue
 
 };
 
+// class StaticPersistentTileScheduler
+// {
+
+// public:
+
+//     // Host-side kernel arguments
+//     struct Arguments
+//     {
+//         int const num_blocks_m, num_blocks_n;
+//         int* const tile_count_semaphore = nullptr;
+//     };
+
+//     // Device-side kernel params
+//     struct Params
+//     {
+//         int total_blocks;
+//         cutlass::FastDivmod m_block_divmod, n_block_divmod;
+//     };
+
+//     static Params
+//     to_underlying_arguments(const Arguments& args)
+//     {
+//         return
+//         {
+//             args.num_blocks_m * args.num_blocks_n,
+//             cutlass::FastDivmod(args.num_blocks_m),
+//             cutlass::FastDivmod(args.num_blocks_n)
+//         };
+//     }
+
+//     static dim3
+//     get_grid_dim(const Arguments& args, int num_sm)
+//     {
+//         return {uint32_t(num_sm), 1, 1};
+//     }
+
+//     struct WorkTileInfo
+//     {
+//         int tile_idx;
+
+//         CUTLASS_DEVICE
+//         bool is_valid(Params const& params) const {
+//             return tile_idx < params.total_blocks;
+//         }
+
+//         CUTLASS_DEVICE
+//         cute::tuple<int32_t, int32_t, int32_t>
+//         get_block_coord(Params const& params) const {
+//             int m_block, n_block, bidb;
+//             bidb = params.n_block_divmod.divmod(n_block, params.m_block_divmod.divmod(m_block, tile_idx));
+//             return {m_block, n_block, bidb};
+//         }
+//     };
+
+//     CUTLASS_DEVICE // inline
+//     StaticPersistentTileScheduler(int* tile_count_smem_) {};
+
+//     CUTLASS_DEVICE
+//     WorkTileInfo
+//     get_initial_work() const
+//     {
+//         return {int(blockIdx.x)};
+//     }
+
+//     CUTLASS_DEVICE
+//     void init_consumer() const
+//     {
+
+//     }
+
+//     CUTLASS_DEVICE
+//     void prefetch_next_work(const Params& params, WorkTileInfo& current_work) const
+//     {
+
+//     }
+
+//     CUTLASS_DEVICE
+//     void broadcast_next_work(WorkTileInfo& current_work) const
+//     {
+
+//     }
+
+//     template<bool isProducer=false>
+//     CUTLASS_DEVICE
+//     WorkTileInfo
+//     get_next_work(const Params& params, WorkTileInfo& current_work) const
+//     {
+//         return {current_work.tile_idx + int(gridDim.x)};
+//     }
+// };
+
 class StaticPersistentTileScheduler
 {
 
 public:
+
+    static constexpr int tile_group_m = 16;
+    static constexpr int tile_group_n = 8;
+    static constexpr int tile_group_size = tile_group_m * tile_group_n;
 
     // Host-side kernel arguments
     struct Arguments
@@ -584,7 +679,8 @@ public:
     struct Params
     {
         int total_blocks;
-        cutlass::FastDivmod m_block_divmod, n_block_divmod;
+        int num_blocks_m;
+        int num_blocks_n;
     };
 
     static Params
@@ -593,8 +689,8 @@ public:
         return
         {
             args.num_blocks_m * args.num_blocks_n,
-            cutlass::FastDivmod(args.num_blocks_m),
-            cutlass::FastDivmod(args.num_blocks_n)
+            args.num_blocks_m,
+            args.num_blocks_n
         };
     }
 
@@ -617,7 +713,16 @@ public:
         cute::tuple<int32_t, int32_t, int32_t>
         get_block_coord(Params const& params) const {
             int m_block, n_block, bidb;
-            bidb = params.n_block_divmod.divmod(n_block, params.m_block_divmod.divmod(m_block, tile_idx));
+            int tile_group_idx = tile_idx / tile_group_size;
+            int tile_in_group = tile_idx % tile_group_size;
+            int tile_m = tile_in_group % tile_group_m;
+            int tile_n = tile_in_group / tile_group_m;
+            int group_m, group_n;
+            group_m = tile_group_idx % (params.num_blocks_m / tile_group_m);
+            group_n = tile_group_idx / (params.num_blocks_m / tile_group_m);
+            m_block = group_m * tile_group_m + tile_m;
+            n_block = group_n * tile_group_n + tile_n;
+            bidb = 0;
             return {m_block, n_block, bidb};
         }
     };
@@ -831,10 +936,10 @@ void launch_cute_hopper_gemm_kernel_v03(
 {   
     // Block shape and cta tiler
     constexpr int kWarps_ = 12;
-    constexpr int kBlockM_ = 256;
-    constexpr int kBlockN_ = 128;
+    constexpr int kBlockM_ = 128;
+    constexpr int kBlockN_ = 256;
     constexpr int kBlockK_ = 64;
-    constexpr int kStages_ = 2;
+    constexpr int kStages_ = 3;
 
     using Kernel_traits = KernelTraits<T, kWarps_,kBlockM_, kBlockN_, kBlockK_, kStages_>;
 

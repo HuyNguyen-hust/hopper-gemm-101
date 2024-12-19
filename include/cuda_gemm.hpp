@@ -105,10 +105,10 @@ void launch_cute_hopper_gemm_kernel_v03(
     cudaStream_t stream);
 }
 
-namespace gemm_hopper_v04
+namespace gemm_hopper_v03_no_epilogue
 {
 template <typename T>
-void launch_cute_hopper_gemm_kernel_v04(
+void launch_cute_hopper_gemm_kernel_v03_no_epilogue(
     size_t m, size_t n, size_t k,
     const T *alpha,
     const T *A, size_t lda,
