@@ -181,7 +181,7 @@ struct CollectiveMainloop
     );
     using TmaLoadB = decltype(
         make_tma_copy(
-            SM90_TMA_LOAD{},
+            SM90_TMA_LOAD_MULTICAST{},
             make_tensor(
                 make_gmem_ptr(static_cast<Element *>(nullptr)),
                 ShapeT{},
@@ -238,7 +238,7 @@ struct CollectiveMainloop
             _1{}
         );
         TmaLoadB tma_load_B = make_tma_copy(
-            SM90_TMA_LOAD{},
+            SM90_TMA_LOAD_MULTICAST{},
             mB,
             SmemLayoutB{}(_, _, 0),
             Shape<Int<kBlockN>, Int<kBlockK>>{},
@@ -331,43 +331,18 @@ struct CollectiveMainloop
 
         int lane_predicate = cute::elect_one_sync();
 
-        if (lane_predicate && blockIdx.x == 2)
-        {
-            print("%d\n", block_rank_in_cluster);
-            printf("Mask: %u (decimal), 0x%X (hex)\n", mcast_mask_B, mcast_mask_B);
-            print(tAgA);
-            printf("\n");
-            print(tAsA);
-            printf("\n");
-            print(tBgB);
-            printf("\n");
-            print(tBsB);
-            printf("\n");
-        }
-        return;
-
         // copy
         if (lane_predicate)
         {
             #pragma unroll 1
             for (int k_tile = 0; k_tile < NUM_TILES_K; ++k_tile)
             {
-                if (blockIdx.x == 0)
-                {
-                    printf("before read phase: %d\n", k_tile);
-                }
-
                 pipeline.producer_acquire(write_state);
                 // empty_barrier.wait()
                 // full_barrier.arrive_and_expect_tx()
                 uint64_t* full_barrier = pipeline.producer_get_barrier(write_state);
 
                 auto stage = write_state.index();
-
-                if (blockIdx.x == 0)
-                {
-                    printf("read phase: %d\n", k_tile);
-                }
 
                 copy(mainloop_params.tma_load_A.with(*full_barrier, 0), tAgA(_, k_tile), tAsA(_, stage));
                 copy(mainloop_params.tma_load_B.with(*full_barrier, mcast_mask_B), tBgB(_, k_tile), tBsB(_, stage));
@@ -446,16 +421,7 @@ struct CollectiveMainloop
         #pragma unroll 1
         for (int k_tile = 0; k_tile < NUM_TILES_K; ++k_tile) {
             // Wait for TMA to load this stage of the pipeline
-            if (blockIdx.x == 0 && threadIdx.x == 128)
-            {
-                printf("before mma phase: %d\n", k_tile);
-            }
             pipeline.consumer_wait(read_state);
-            if (blockIdx.x == 0 && threadIdx.x == 128)
-            {
-            printf("mma phase: %d\n", k_tile);
-            }
-
             auto stage = read_state.index();
             warpgroup_arrive();
             // WGMMA with dispatch mode (V,M,K) x (V,N,K) => (V,M,N)
@@ -951,7 +917,7 @@ __global__ void cute_hopper_gemm_v04(
                 );
             }
 
-            // CollectiveMainloop::load_tail(pipeline, write_state);
+            CollectiveMainloop::load_tail(pipeline, write_state);
         }
     }
     else    // Consumer

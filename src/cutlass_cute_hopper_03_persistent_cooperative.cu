@@ -171,7 +171,9 @@ struct CollectiveMainloop
                 ShapeT{},
                 StrideT{}
             ),
-            SmemLayoutA{}(_, _, 0)
+            SmemLayoutA{}(_, _, 0),
+            Shape<Int<kBlockM>, Int<kBlockK>>{},
+            _1{}
         )
     );
     using TmaLoadB = decltype(
@@ -182,7 +184,9 @@ struct CollectiveMainloop
                 ShapeT{},
                 StrideT{}
             ),
-            SmemLayoutB{}(_, _, 0)
+            SmemLayoutB{}(_, _, 0),
+            Shape<Int<kBlockN>, Int<kBlockK>>{},
+            _1{}
         )
     );
 
@@ -226,12 +230,16 @@ struct CollectiveMainloop
         TmaLoadA tma_load_A = make_tma_copy(
             SM90_TMA_LOAD{},
             mA,
-            SmemLayoutA{}(_, _, 0)
+            SmemLayoutA{}(_, _, 0),
+            Shape<Int<kBlockM>, Int<kBlockK>>{},
+            _1{}
         );
         TmaLoadB tma_load_B = make_tma_copy(
             SM90_TMA_LOAD{},
             mB,
-            SmemLayoutB{}(_, _, 0)
+            SmemLayoutB{}(_, _, 0),
+            Shape<Int<kBlockN>, Int<kBlockK>>{},
+            _1{}
         );
 
         return
